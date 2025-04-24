@@ -20,7 +20,37 @@ from lightning.pytorch.callbacks import EarlyStopping, ModelCheckpoint
 # Import project modules
 from src.climate_3d_cnn import ClimateEmulator3D
 from _climate_kaggle_metric import score as kaggle_score
-from src.utils import convert_predictions_to_kaggle_format, create_climate_data_array, get_lat_weights
+from src.utils import create_climate_data_array, get_lat_weights
+
+# Define a fixed version of the convert_predictions_to_kaggle_format function
+def convert_predictions_to_kaggle_format(predictions, time_coords, lat_coords, lon_coords, var_names):
+    """
+    Convert climate model predictions to Kaggle submission format.
+    Fixed version to avoid formatting issues with numpy arrays.
+    """
+    # Create a list to hold all data rows
+    rows = []
+
+    # Loop through all dimensions to create flattened data
+    for t_idx, t in enumerate(time_coords):
+        for var_idx, var_name in enumerate(var_names):
+            for y_idx, lat in enumerate(lat_coords):
+                for x_idx, lon in enumerate(lon_coords):
+                    # Get the predicted value
+                    pred_value = predictions[t_idx, var_idx, y_idx, x_idx]
+
+                    # Create row ID: format as time_variable_lat_lon
+                    # Convert numpy values to float to avoid formatting issues
+                    lat_val = float(lat)
+                    lon_val = float(lon)
+                    row_id = f"t{t_idx:03d}_{var_name}_{lat_val:.2f}_{lon_val:.2f}"
+
+                    # Add to rows list
+                    rows.append({"ID": row_id, "Prediction": float(pred_value)})
+
+    # Create DataFrame
+    submission_df = pd.DataFrame(rows)
+    return submission_df
 
 # Display versions for debugging
 print(f"Python version: {sys.version}")
@@ -101,7 +131,7 @@ data_config = {
     "path": data_path,  # Use the data_path that was successfully identified in Step 0
     "input_vars": ["CO2", "SO2", "CH4", "BC", "rsdt"],
     "output_vars": ["tas", "pr"],
-    "batch_size": 32,
+    "batch_size": 4,  # Reduced from 32 to 4 to save GPU memory
     "num_workers": 4
 }
 
@@ -239,10 +269,10 @@ else:
 training_config = {
     "lr": 1e-3,
     "weight_decay": 1e-5,
-    "max_epochs": 100,
+    "max_epochs": 50,  # Reduced from 100 to 50 for faster training
     "early_stopping_patience": 10,
     "gradient_clip_val": 1.0,
-    "accumulate_grad_batches": 1
+    "accumulate_grad_batches": 8  # Increase to simulate larger batch sizes
 }
 
 # Create model
@@ -294,6 +324,7 @@ if data_module is not None and model is not None:
         callbacks=callbacks,
         gradient_clip_val=training_config["gradient_clip_val"],
         accumulate_grad_batches=training_config["accumulate_grad_batches"],
+        precision="16-mixed",  # Use mixed precision to save GPU memory
     )
 
     print("✅ Trainer created successfully")
