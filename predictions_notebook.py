@@ -127,6 +127,8 @@ else:
 
 # %%
 # Define data parameters
+use_test_run = True  # Set to True for a quick test run with minimal data
+
 data_config = {
     "path": data_path,  # Use the data_path that was successfully identified in Step 0
     "input_vars": ["CO2", "SO2", "CH4", "BC", "rsdt"],
@@ -134,6 +136,11 @@ data_config = {
     "batch_size": 4,  # Reduced from 32 to 4 to save GPU memory
     "num_workers": 4
 }
+
+# If using test run, add additional parameters to limit data size
+if use_test_run:
+    data_config["max_samples"] = 100  # Limit to a small number of samples for testing
+    print("⚠️ TEST RUN MODE: Using limited data samples for quick testing")
 
 # Import and initialize the data module
 data_module = None
@@ -155,13 +162,14 @@ except Exception as e:
     
     # Define a simplified DataModule if the import fails
     class SimpleClimateDataModule(pl.LightningDataModule):
-        def __init__(self, path, input_vars, output_vars, batch_size=32, num_workers=4, **kwargs):
+        def __init__(self, path, input_vars, output_vars, batch_size=32, num_workers=4, max_samples=None, **kwargs):
             super().__init__()
             self.path = path
             self.input_vars = input_vars
             self.output_vars = output_vars
             self.batch_size = batch_size
             self.num_workers = num_workers
+            self.max_samples = max_samples  # Add support for limiting samples
             
             # Store important properties
             self.normalizer = None
@@ -195,6 +203,9 @@ except Exception as e:
                 if missing_outputs:
                     print(f"⚠️ Warning: Missing output variables: {missing_outputs}")
                 
+                if self.max_samples:
+                    print(f"⚠️ Limiting to {self.max_samples} samples for testing")
+                
             except Exception as e:
                 print(f"❌ Error loading dataset: {e}")
                 # Continue with a dummy dataset for demonstration
@@ -216,26 +227,30 @@ except Exception as e:
             
         def train_dataloader(self):
             # Create a simple dataloader that returns random data
-            X = torch.randn(100, len(self.input_vars), 32, 64, 128)
-            Y = torch.randn(100, len(self.output_vars), 32, 64, 128)
+            # Limit the number of samples if max_samples is set
+            n_samples = self.max_samples if self.max_samples else 100
+            X = torch.randn(n_samples, len(self.input_vars), 32, 64, 128)
+            Y = torch.randn(n_samples, len(self.output_vars), 32, 64, 128)
             
             from torch.utils.data import TensorDataset, DataLoader
             dataset = TensorDataset(X, Y)
             return DataLoader(dataset, batch_size=self.batch_size)
             
         def val_dataloader(self):
-            # Create a simple dataloader that returns random data
-            X = torch.randn(20, len(self.input_vars), 32, 64, 128)
-            Y = torch.randn(20, len(self.output_vars), 32, 64, 128)
+            # Create a simple dataloader with fewer samples for validation
+            n_samples = min(20, self.max_samples if self.max_samples else 20)
+            X = torch.randn(n_samples, len(self.input_vars), 32, 64, 128)
+            Y = torch.randn(n_samples, len(self.output_vars), 32, 64, 128)
             
             from torch.utils.data import TensorDataset, DataLoader
             dataset = TensorDataset(X, Y)
             return DataLoader(dataset, batch_size=self.batch_size)
             
         def test_dataloader(self):
-            # Create a simple dataloader that returns random data
-            X = torch.randn(20, len(self.input_vars), 32, 64, 128)
-            Y = torch.randn(20, len(self.output_vars), 32, 64, 128)
+            # Create a simple dataloader with fewer samples for testing
+            n_samples = min(20, self.max_samples if self.max_samples else 20)
+            X = torch.randn(n_samples, len(self.input_vars), 32, 64, 128)
+            Y = torch.randn(n_samples, len(self.output_vars), 32, 64, 128)
             
             from torch.utils.data import TensorDataset, DataLoader
             dataset = TensorDataset(X, Y)
@@ -275,6 +290,13 @@ training_config = {
     "accumulate_grad_batches": 8  # Increase to simulate larger batch sizes
 }
 
+# If using test run, reduce epochs and other parameters
+if use_test_run:
+    training_config["max_epochs"] = 3  # Only run a few epochs for testing
+    training_config["early_stopping_patience"] = 999  # Disable early stopping in test mode
+    training_config["accumulate_grad_batches"] = 2  # Use smaller accumulation for faster iterations
+    print("⚠️ TEST RUN MODE: Using only 3 epochs for quick testing")
+
 # Create model
 model = None
 try:
@@ -285,6 +307,154 @@ try:
         weight_decay=training_config["weight_decay"]
     )
     print("✅ Model created successfully")
+    
+    # Monkey patch the on_validation_epoch_end method to use our fixed convert_predictions_to_kaggle_format function
+    # Store the original method
+    original_val_epoch_end = model.on_validation_epoch_end
+    
+    # Define the new method that uses our fixed function
+    def patched_on_validation_epoch_end(self):
+        # Stack all predictions and targets
+        all_preds = torch.cat([x["y_pred"] for x in self.validation_step_outputs])
+        all_targets = torch.cat([x["y_true"] for x in self.validation_step_outputs])
+        
+        # Get coordinates
+        lat_coords, lon_coords = self.trainer.datamodule.get_coords()
+        time_coords = np.arange(all_preds.shape[0])
+        output_vars = ["tas", "pr"]  # Temperature and precipitation
+        
+        # Convert predictions and targets to Kaggle format
+        predictions = all_preds.numpy()
+        targets = all_targets.numpy()
+        
+        # Use our fixed function instead of the original one
+        submission_df = convert_predictions_to_kaggle_format(
+            predictions, 
+            time_coords, 
+            lat_coords, 
+            lon_coords, 
+            output_vars
+        )
+        
+        solution_df = convert_predictions_to_kaggle_format(
+            targets,
+            time_coords, 
+            lat_coords, 
+            lon_coords, 
+            output_vars
+        )
+        
+        # Calculate Kaggle score
+        try:
+            kaggle_val_score = kaggle_score(solution_df, submission_df, "ID")
+            self.log("val/kaggle_score", kaggle_val_score)
+            print(f"Validation Kaggle score: {kaggle_val_score}")
+        except Exception as e:
+            print(f"Warning: Could not calculate Kaggle score: {e}")
+            # Log a default value to avoid NaN errors
+            self.log("val/kaggle_score", 999.0)
+        
+        # Also calculate individual metrics for monitoring
+        area_weights = self.trainer.datamodule.get_lat_weights()
+        
+        # Calculate metrics for each variable
+        # This part is simplified for robustness
+        try:
+            for i, var_name in enumerate(output_vars):
+                # Extract predictions and targets for this variable
+                preds_var = all_preds[:, i].numpy()
+                targets_var = all_targets[:, i].numpy()
+                
+                # Create xarray objects for weighted calculations
+                preds_xr = create_climate_data_array(
+                    preds_var,
+                    time_coords=time_coords,
+                    lat_coords=lat_coords,
+                    lon_coords=lon_coords,
+                    var_name=var_name,
+                    var_unit="K" if var_name == "tas" else "mm/day"
+                )
+                targets_xr = create_climate_data_array(
+                    targets_var,
+                    time_coords=time_coords,
+                    lat_coords=lat_coords,
+                    lon_coords=lon_coords,
+                    var_name=var_name,
+                    var_unit="K" if var_name == "tas" else "mm/day"
+                )
+                
+                # Log simple metrics for monitoring
+                mse = ((preds_var - targets_var) ** 2).mean()
+                self.log(f"val/{var_name}/mse", float(mse))
+        except Exception as e:
+            print(f"Warning: Could not calculate individual metrics: {e}")
+        
+        # Clear saved outputs
+        self.validation_step_outputs.clear()
+    
+    # Apply the monkey patch
+    import types
+    model.on_validation_epoch_end = types.MethodType(patched_on_validation_epoch_end, model)
+    
+    # Also patch the test method
+    def patched_on_test_epoch_end(self):
+        """
+        Process test predictions and create Kaggle submission
+        """
+        # Stack all predictions
+        all_preds = torch.cat([x["y_pred"] for x in self.test_step_outputs])
+        
+        # Get coordinates
+        lat_coords, lon_coords = self.trainer.datamodule.get_coords()
+        time_coords = np.arange(all_preds.shape[0])
+        output_vars = ["tas", "pr"]
+        
+        # Convert to numpy for submission format
+        predictions = all_preds.numpy()
+        
+        # Create submission DataFrame using our fixed function
+        submission_df = convert_predictions_to_kaggle_format(
+            predictions, 
+            time_coords, 
+            lat_coords, 
+            lon_coords, 
+            output_vars
+        )
+        
+        # Save submission
+        output_dir = self.trainer.log_dir if self.trainer.log_dir else "outputs"
+        os.makedirs(output_dir, exist_ok=True)
+        submission_path = os.path.join(output_dir, "submission.csv")
+        submission_df.to_csv(submission_path, index=False)
+        print(f"Saved submission to {submission_path}")
+        
+        # Clear saved outputs
+        self.test_step_outputs.clear()
+    
+    # Apply the test method patch
+    model.on_test_epoch_end = types.MethodType(patched_on_test_epoch_end, model)
+    
+    # Patch the test_step method to ensure it returns values with the right structure
+    def patched_test_step(self, batch, batch_idx):
+        """
+        Test step is similar to validation step but for final evaluation
+        """
+        x, y_true = batch
+        y_pred = self(x)
+        
+        # Store predictions for later processing
+        self.test_step_outputs.append({
+            "y_pred": self.normalizer.inverse_transform_output(y_pred.detach().cpu()),
+            "y_true": self.normalizer.inverse_transform_output(y_true.detach().cpu())
+        })
+        
+        return {}
+    
+    # Apply the test_step patch
+    model.test_step = types.MethodType(patched_test_step, model)
+    
+    print("✅ Model validation and test methods patched successfully")
+    
 except Exception as e:
     print(f"❌ Error creating model: {e}")
     print("Detailed error info:", sys.exc_info())
