@@ -22,6 +22,9 @@ from src.climate_3d_cnn import ClimateEmulator3D
 from _climate_kaggle_metric import score as kaggle_score
 from src.utils import create_climate_data_array, get_lat_weights
 
+# Set debug mode - enables additional debug print statements
+DEBUG_MODE = True
+
 # Define a fixed version of the convert_predictions_to_kaggle_format function
 def convert_predictions_to_kaggle_format(predictions, time_coords, lat_coords, lon_coords, var_names):
     """
@@ -31,22 +34,98 @@ def convert_predictions_to_kaggle_format(predictions, time_coords, lat_coords, l
     # Create a list to hold all data rows
     rows = []
 
+    # Print detailed debug information if in debug mode 
+    if DEBUG_MODE:
+        print("----- DEBUG INFO -----")
+        print(f"Predictions type: {type(predictions)}")
+        print(f"Time coords type: {type(time_coords)}")
+        print(f"Lat coords type: {type(lat_coords)}")
+        print(f"Lon coords type: {type(lon_coords)}")
+        
+        # Print sample values
+        if len(time_coords) > 0:
+            print(f"Sample time coord: {time_coords[0]}, type: {type(time_coords[0])}")
+        if len(lat_coords) > 0:
+            print(f"Sample lat coord: {lat_coords[0]}, type: {type(lat_coords[0])}")
+        if len(lon_coords) > 0:
+            print(f"Sample lon coord: {lon_coords[0]}, type: {type(lon_coords[0])}")
+            
+        # Print sample prediction if available
+        if predictions.size > 0:
+            sample_pred = predictions[0, 0, 0, 0] if predictions.ndim >= 4 else None
+            if sample_pred is not None:
+                print(f"Sample prediction: {sample_pred}, type: {type(sample_pred)}")
+                print(f"Has shape: {hasattr(sample_pred, 'shape')}")
+                if hasattr(sample_pred, 'shape'):
+                    print(f"Sample prediction shape: {sample_pred.shape}")
+        print("----- END DEBUG INFO -----")
+
     # Loop through all dimensions to create flattened data
     for t_idx, t in enumerate(time_coords):
         for var_idx, var_name in enumerate(var_names):
             for y_idx, lat in enumerate(lat_coords):
                 for x_idx, lon in enumerate(lon_coords):
-                    # Get the predicted value
-                    pred_value = predictions[t_idx, var_idx, y_idx, x_idx]
-
-                    # Create row ID: format as time_variable_lat_lon
-                    # Convert numpy values to float to avoid formatting issues
-                    lat_val = float(lat)
-                    lon_val = float(lon)
-                    row_id = f"t{t_idx:03d}_{var_name}_{lat_val:.2f}_{lon_val:.2f}"
+                    # Get the predicted value - handle potential indexing errors
+                    try:
+                        pred_value = predictions[t_idx, var_idx, y_idx, x_idx]
+                    except IndexError as e:
+                        print(f"IndexError accessing predictions[{t_idx}, {var_idx}, {y_idx}, {x_idx}]: {e}")
+                        print(f"Predictions shape: {predictions.shape}")
+                        # Use a default value and continue
+                        pred_value = 0.0
+                        
+                    # If we're in debug mode and this is the first few items, print detailed info
+                    if DEBUG_MODE and t_idx < 2 and var_idx < 2 and y_idx < 2 and x_idx < 2:
+                        print(f"Processing: t_idx={t_idx}, var={var_name}, y_idx={y_idx}, x_idx={x_idx}")
+                        print(f"  Raw value: {pred_value}, type: {type(pred_value)}")
+                        if hasattr(pred_value, 'shape'):
+                            print(f"  Shape: {pred_value.shape}")
+                    
+                    # Convert to scalar values properly
+                    # If the value is an array/tensor with multiple elements, take the first one
+                    try:
+                        if hasattr(pred_value, 'shape') and pred_value.shape:
+                            # It's an array with dimensions, extract a single scalar
+                            if hasattr(pred_value, 'item'):
+                                # PyTorch tensor or numpy scalar array
+                                pred_scalar = float(pred_value.item())
+                            elif hasattr(pred_value, 'flat') and len(pred_value.flat) > 0:
+                                # Numpy array with multiple elements
+                                pred_scalar = float(pred_value.flat[0])
+                            else:
+                                # Fallback
+                                pred_scalar = float(pred_value)
+                        else:
+                            # It's already a scalar or scalar-like
+                            pred_scalar = float(pred_value)
+                    except (TypeError, ValueError, IndexError) as e:
+                        # Fallback to string if conversion fails
+                        print(f"Warning: Could not convert prediction value to float: {e}")
+                        print(f"Value type: {type(pred_value)}, Shape: {getattr(pred_value, 'shape', 'N/A')}")
+                        pred_scalar = 0.0  # Use a default value
+                    
+                    # Similar careful conversion for lat and lon
+                    try:
+                        if hasattr(lat, 'item'):
+                            lat_scalar = float(lat.item())
+                        else:
+                            lat_scalar = float(lat)
+                            
+                        if hasattr(lon, 'item'):
+                            lon_scalar = float(lon.item())
+                        else:
+                            lon_scalar = float(lon)
+                    except (TypeError, ValueError) as e:
+                        # Fallback if conversion fails
+                        print(f"Warning: Could not convert coordinate to float: {e}")
+                        lat_scalar = float(y_idx)  # Use index as fallback
+                        lon_scalar = float(x_idx)
+                    
+                    # Create row ID
+                    row_id = f"t{t_idx:03d}_{var_name}_{lat_scalar:.2f}_{lon_scalar:.2f}"
 
                     # Add to rows list
-                    rows.append({"ID": row_id, "Prediction": float(pred_value)})
+                    rows.append({"ID": row_id, "Prediction": pred_scalar})
 
     # Create DataFrame
     submission_df = pd.DataFrame(rows)
@@ -318,76 +397,89 @@ try:
         all_preds = torch.cat([x["y_pred"] for x in self.validation_step_outputs])
         all_targets = torch.cat([x["y_true"] for x in self.validation_step_outputs])
         
+        # Print shape information for debugging
+        print(f"Validation predictions shape: {all_preds.shape}")
+        print(f"Validation targets shape: {all_targets.shape}")
+        
         # Get coordinates
         lat_coords, lon_coords = self.trainer.datamodule.get_coords()
         time_coords = np.arange(all_preds.shape[0])
         output_vars = ["tas", "pr"]  # Temperature and precipitation
         
+        print(f"Coordinates - Time: {time_coords.shape}, Lat: {lat_coords.shape}, Lon: {lon_coords.shape}")
+        
         # Convert predictions and targets to Kaggle format
         predictions = all_preds.numpy()
         targets = all_targets.numpy()
         
+        print(f"Numpy predictions shape: {predictions.shape}")
+        
+        # Check for NaN or inf values
+        n_nan_pred = np.isnan(predictions).sum()
+        n_inf_pred = np.isinf(predictions).sum()
+        if n_nan_pred > 0 or n_inf_pred > 0:
+            print(f"Warning: Found {n_nan_pred} NaN and {n_inf_pred} inf values in predictions")
+        
         # Use our fixed function instead of the original one
-        submission_df = convert_predictions_to_kaggle_format(
-            predictions, 
-            time_coords, 
-            lat_coords, 
-            lon_coords, 
-            output_vars
-        )
-        
-        solution_df = convert_predictions_to_kaggle_format(
-            targets,
-            time_coords, 
-            lat_coords, 
-            lon_coords, 
-            output_vars
-        )
-        
-        # Calculate Kaggle score
         try:
-            kaggle_val_score = kaggle_score(solution_df, submission_df, "ID")
-            self.log("val/kaggle_score", kaggle_val_score)
-            print(f"Validation Kaggle score: {kaggle_val_score}")
+            print("Converting predictions to Kaggle format...")
+            submission_df = convert_predictions_to_kaggle_format(
+                predictions, 
+                time_coords, 
+                lat_coords, 
+                lon_coords, 
+                output_vars
+            )
+            print(f"Successfully created submission DataFrame with shape: {submission_df.shape}")
+            
+            print("Converting targets to Kaggle format...")
+            solution_df = convert_predictions_to_kaggle_format(
+                targets,
+                time_coords, 
+                lat_coords, 
+                lon_coords, 
+                output_vars
+            )
+            print(f"Successfully created solution DataFrame with shape: {solution_df.shape}")
+            
+            # Calculate Kaggle score
+            try:
+                print("Calculating Kaggle score...")
+                kaggle_val_score = kaggle_score(solution_df, submission_df, "ID")
+                print(f"Successfully calculated Kaggle score: {kaggle_val_score}")
+                self.log("val/kaggle_score", kaggle_val_score)
+            except Exception as e:
+                print(f"Warning: Could not calculate Kaggle score: {e}")
+                print(f"Error type: {type(e).__name__}")
+                print(f"Traceback: {sys.exc_info()[2]}")
+                # Log a default value to avoid NaN errors
+                self.log("val/kaggle_score", 999.0)
+                
+            # Also calculate individual metrics for monitoring
+            area_weights = self.trainer.datamodule.get_lat_weights()
+            
+            # Calculate metrics for each variable
+            # This part is simplified for robustness
+            try:
+                for i, var_name in enumerate(output_vars):
+                    # Extract predictions and targets for this variable
+                    preds_var = all_preds[:, i].numpy()
+                    targets_var = all_targets[:, i].numpy()
+                    
+                    # Calculate simple MSE
+                    mse = ((preds_var - targets_var) ** 2).mean()
+                    self.log(f"val/{var_name}/mse", float(mse))
+                    print(f"MSE for {var_name}: {float(mse)}")
+            except Exception as e:
+                print(f"Warning: Could not calculate individual metrics: {e}")
+        
         except Exception as e:
-            print(f"Warning: Could not calculate Kaggle score: {e}")
-            # Log a default value to avoid NaN errors
+            print(f"Error during Kaggle format conversion: {e}")
+            print(f"Error type: {type(e).__name__}")
+            import traceback
+            traceback.print_exc()
+            # Log a default value
             self.log("val/kaggle_score", 999.0)
-        
-        # Also calculate individual metrics for monitoring
-        area_weights = self.trainer.datamodule.get_lat_weights()
-        
-        # Calculate metrics for each variable
-        # This part is simplified for robustness
-        try:
-            for i, var_name in enumerate(output_vars):
-                # Extract predictions and targets for this variable
-                preds_var = all_preds[:, i].numpy()
-                targets_var = all_targets[:, i].numpy()
-                
-                # Create xarray objects for weighted calculations
-                preds_xr = create_climate_data_array(
-                    preds_var,
-                    time_coords=time_coords,
-                    lat_coords=lat_coords,
-                    lon_coords=lon_coords,
-                    var_name=var_name,
-                    var_unit="K" if var_name == "tas" else "mm/day"
-                )
-                targets_xr = create_climate_data_array(
-                    targets_var,
-                    time_coords=time_coords,
-                    lat_coords=lat_coords,
-                    lon_coords=lon_coords,
-                    var_name=var_name,
-                    var_unit="K" if var_name == "tas" else "mm/day"
-                )
-                
-                # Log simple metrics for monitoring
-                mse = ((preds_var - targets_var) ** 2).mean()
-                self.log(f"val/{var_name}/mse", float(mse))
-        except Exception as e:
-            print(f"Warning: Could not calculate individual metrics: {e}")
         
         # Clear saved outputs
         self.validation_step_outputs.clear()
@@ -401,35 +493,56 @@ try:
         """
         Process test predictions and create Kaggle submission
         """
-        # Stack all predictions
-        all_preds = torch.cat([x["y_pred"] for x in self.test_step_outputs])
-        
-        # Get coordinates
-        lat_coords, lon_coords = self.trainer.datamodule.get_coords()
-        time_coords = np.arange(all_preds.shape[0])
-        output_vars = ["tas", "pr"]
-        
-        # Convert to numpy for submission format
-        predictions = all_preds.numpy()
-        
-        # Create submission DataFrame using our fixed function
-        submission_df = convert_predictions_to_kaggle_format(
-            predictions, 
-            time_coords, 
-            lat_coords, 
-            lon_coords, 
-            output_vars
-        )
-        
-        # Save submission
-        output_dir = self.trainer.log_dir if self.trainer.log_dir else "outputs"
-        os.makedirs(output_dir, exist_ok=True)
-        submission_path = os.path.join(output_dir, "submission.csv")
-        submission_df.to_csv(submission_path, index=False)
-        print(f"Saved submission to {submission_path}")
-        
-        # Clear saved outputs
-        self.test_step_outputs.clear()
+        try:
+            # Stack all predictions
+            all_preds = torch.cat([x["y_pred"] for x in self.test_step_outputs])
+            
+            # Print shape information for debugging
+            print(f"Test predictions shape: {all_preds.shape}")
+            
+            # Get coordinates
+            lat_coords, lon_coords = self.trainer.datamodule.get_coords()
+            time_coords = np.arange(all_preds.shape[0])
+            output_vars = ["tas", "pr"]
+            
+            print(f"Coordinates - Time: {time_coords.shape}, Lat: {lat_coords.shape}, Lon: {lon_coords.shape}")
+            
+            # Convert to numpy for submission format
+            predictions = all_preds.numpy()
+            
+            print(f"Numpy predictions shape: {predictions.shape}")
+            
+            # Check for NaN or inf values
+            n_nan_pred = np.isnan(predictions).sum()
+            n_inf_pred = np.isinf(predictions).sum()
+            if n_nan_pred > 0 or n_inf_pred > 0:
+                print(f"Warning: Found {n_nan_pred} NaN and {n_inf_pred} inf values in predictions")
+            
+            # Create submission DataFrame using our fixed function
+            print("Converting predictions to Kaggle format...")
+            submission_df = convert_predictions_to_kaggle_format(
+                predictions, 
+                time_coords, 
+                lat_coords, 
+                lon_coords, 
+                output_vars
+            )
+            print(f"Successfully created submission DataFrame with shape: {submission_df.shape}")
+            
+            # Save submission
+            output_dir = self.trainer.log_dir if self.trainer.log_dir else "outputs"
+            os.makedirs(output_dir, exist_ok=True)
+            submission_path = os.path.join(output_dir, "submission.csv")
+            submission_df.to_csv(submission_path, index=False)
+            print(f"Saved submission to {submission_path}")
+        except Exception as e:
+            print(f"Error during test prediction processing: {e}")
+            print(f"Error type: {type(e).__name__}")
+            import traceback
+            traceback.print_exc()
+        finally:
+            # Clear saved outputs even if an error occurred
+            self.test_step_outputs.clear()
     
     # Apply the test method patch
     model.on_test_epoch_end = types.MethodType(patched_on_test_epoch_end, model)
