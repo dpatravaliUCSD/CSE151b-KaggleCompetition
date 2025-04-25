@@ -24,6 +24,8 @@ from src.utils import create_climate_data_array, get_lat_weights
 
 # Set debug mode - enables additional debug print statements
 DEBUG_MODE = False
+# Set this to True to suppress all conversion warnings
+SUPPRESS_WARNINGS = True
 
 # Define a fixed version of the convert_predictions_to_kaggle_format function
 def convert_predictions_to_kaggle_format(predictions, time_coords, lat_coords, lon_coords, var_names):
@@ -143,7 +145,7 @@ def convert_predictions_to_kaggle_format(predictions, time_coords, lat_coords, l
                     rows.append({"ID": row_id, "Prediction": pred_scalar})
 
     # Print summary of warnings instead of individual messages
-    if warning_count > 0:
+    if warning_count > 0 and not SUPPRESS_WARNINGS:
         print(f"Handled {warning_count} conversion issues silently")
 
     # Create DataFrame
@@ -441,7 +443,7 @@ try:
             targets = all_targets.numpy()
             n_nan_pred = np.isnan(predictions).sum()
             n_inf_pred = np.isinf(predictions).sum()
-            if n_nan_pred > 0 or n_inf_pred > 0:
+            if (n_nan_pred > 0 or n_inf_pred > 0) and not SUPPRESS_WARNINGS:
                 print(f"Warning: Found {n_nan_pred} NaN and {n_inf_pred} inf values in predictions")
             
             # Convert first and calculate score
@@ -456,7 +458,7 @@ try:
                 self.log("val/kaggle_score", kaggle_val_score)
                 print(f"Validation Kaggle score: {kaggle_val_score}")
             except Exception as e:
-                print(f"Warning: Could not calculate Kaggle score: {e}")
+                if not SUPPRESS_WARNINGS:\n                    print(f"Warning: Could not calculate Kaggle score: {e}")
                 # Log a default value to avoid NaN errors
                 self.log("val/kaggle_score", 999.0)
                 
@@ -467,7 +469,7 @@ try:
                 self.log("val/mse", float(mse))
                 print(f"Validation MSE: {float(mse)}")
             except Exception as e:
-                print(f"Warning: Could not calculate MSE: {e}")
+                if not SUPPRESS_WARNINGS:\n                    print(f"Warning: Could not calculate MSE: {e}")
         
         except Exception as e:
             print(f"Error during validation: {e}")
@@ -528,7 +530,7 @@ try:
             try:
                 n_nan_pred = np.isnan(predictions).sum()
                 n_inf_pred = np.isinf(predictions).sum()
-                if n_nan_pred > 0 or n_inf_pred > 0:
+                if (n_nan_pred > 0 or n_inf_pred > 0) and not SUPPRESS_WARNINGS:
                     print(f"Warning: Found {n_nan_pred} NaN and {n_inf_pred} inf values in predictions")
                     # Replace NaN and inf with 0
                     predictions = np.nan_to_num(predictions, nan=0.0, posinf=0.0, neginf=0.0)
@@ -593,7 +595,7 @@ try:
             y_pred_processed = self.normalizer.inverse_transform_output(y_pred.detach().cpu())
             y_true_processed = self.normalizer.inverse_transform_output(y_true.detach().cpu())
         else:
-            print("Warning: normalizer not available, using raw values")
+            if not SUPPRESS_WARNINGS:\n            print("Warning: normalizer not available, using raw values")
             y_pred_processed = y_pred.detach().cpu()
             y_true_processed = y_true.detach().cpu()
         
