@@ -23,7 +23,7 @@ from _climate_kaggle_metric import score as kaggle_score
 from src.utils import create_climate_data_array, get_lat_weights
 
 # Set debug mode - enables additional debug print statements
-DEBUG_MODE = True
+DEBUG_MODE = False
 
 # Define a fixed version of the convert_predictions_to_kaggle_format function
 def convert_predictions_to_kaggle_format(predictions, time_coords, lat_coords, lon_coords, var_names):
@@ -33,6 +33,9 @@ def convert_predictions_to_kaggle_format(predictions, time_coords, lat_coords, l
     """
     # Create a list to hold all data rows
     rows = []
+    
+    # Count warnings for summary (instead of individual prints)
+    warning_count = 0
 
     # Print detailed debug information if in debug mode 
     if DEBUG_MODE:
@@ -68,11 +71,11 @@ def convert_predictions_to_kaggle_format(predictions, time_coords, lat_coords, l
                     # Get the predicted value - handle potential indexing errors
                     try:
                         pred_value = predictions[t_idx, var_idx, y_idx, x_idx]
-                    except IndexError as e:
-                        print(f"IndexError accessing predictions[{t_idx}, {var_idx}, {y_idx}, {x_idx}]: {e}")
-                        print(f"Predictions shape: {predictions.shape}")
+                    except IndexError:
                         # Use a default value and continue
                         pred_value = 0.0
+                        warning_count += 1
+                        continue
                         
                     # If we're in debug mode and this is the first few items, print detailed info
                     if DEBUG_MODE and t_idx < 2 and var_idx < 2 and y_idx < 2 and x_idx < 2:
@@ -82,7 +85,8 @@ def convert_predictions_to_kaggle_format(predictions, time_coords, lat_coords, l
                             print(f"  Shape: {pred_value.shape}")
                     
                     # Convert to scalar values properly
-                    # If the value is an array/tensor with multiple elements, take the first one
+                    # If the value is an array/tensor with multiple elements, use the first one
+                    pred_scalar = 0.0  # Default value
                     try:
                         if hasattr(pred_value, 'shape') and pred_value.shape:
                             # It's an array with dimensions, extract a single scalar
@@ -90,42 +94,57 @@ def convert_predictions_to_kaggle_format(predictions, time_coords, lat_coords, l
                                 # PyTorch tensor or numpy scalar array
                                 pred_scalar = float(pred_value.item())
                             elif hasattr(pred_value, 'flat') and len(pred_value.flat) > 0:
-                                # Numpy array with multiple elements
+                                # Numpy array with multiple elements, use first element
                                 pred_scalar = float(pred_value.flat[0])
                             else:
-                                # Fallback
-                                pred_scalar = float(pred_value)
+                                # For arrays with multiple elements that cannot be directly converted
+                                pred_scalar = float(pred_value[0]) if hasattr(pred_value, '__getitem__') else 0.0
+                                warning_count += 1
                         else:
                             # It's already a scalar or scalar-like
                             pred_scalar = float(pred_value)
-                    except (TypeError, ValueError, IndexError) as e:
-                        # Fallback to string if conversion fails
-                        print(f"Warning: Could not convert prediction value to float: {e}")
-                        print(f"Value type: {type(pred_value)}, Shape: {getattr(pred_value, 'shape', 'N/A')}")
-                        pred_scalar = 0.0  # Use a default value
+                    except (TypeError, ValueError, IndexError):
+                        # Silently use default value
+                        warning_count += 1
                     
                     # Similar careful conversion for lat and lon
                     try:
-                        if hasattr(lat, 'item'):
-                            lat_scalar = float(lat.item())
+                        # For lat coordinate
+                        if hasattr(lat, 'shape') and lat.shape:
+                            # It's an array
+                            if y_idx < len(lat) and hasattr(lat, '__getitem__'):
+                                lat_scalar = float(lat[y_idx])
+                            else:
+                                lat_scalar = float(y_idx)  # Use index as fallback
+                                warning_count += 1
                         else:
                             lat_scalar = float(lat)
                             
-                        if hasattr(lon, 'item'):
-                            lon_scalar = float(lon.item())
+                        # For lon coordinate  
+                        if hasattr(lon, 'shape') and lon.shape:
+                            # It's an array
+                            if x_idx < len(lon) and hasattr(lon, '__getitem__'):
+                                lon_scalar = float(lon[x_idx])
+                            else:
+                                lon_scalar = float(x_idx)  # Use index as fallback
+                                warning_count += 1
                         else:
                             lon_scalar = float(lon)
-                    except (TypeError, ValueError) as e:
-                        # Fallback if conversion fails
-                        print(f"Warning: Could not convert coordinate to float: {e}")
-                        lat_scalar = float(y_idx)  # Use index as fallback
+                    except (TypeError, ValueError, IndexError):
+                        # Silently use indices as fallback
+                        lat_scalar = float(y_idx)
                         lon_scalar = float(x_idx)
+                        warning_count += 1
                     
                     # Create row ID
                     row_id = f"t{t_idx:03d}_{var_name}_{lat_scalar:.2f}_{lon_scalar:.2f}"
 
                     # Add to rows list
                     rows.append({"ID": row_id, "Prediction": pred_scalar})
+
+    # Print summary of warnings instead of individual messages
+    if warning_count > 0:
+        print(f"Handled {warning_count} conversion issues silently")
 
     # Create DataFrame
     submission_df = pd.DataFrame(rows)
@@ -393,96 +412,60 @@ try:
     
     # Define the new method that uses our fixed function
     def patched_on_validation_epoch_end(self):
-        # Stack all predictions and targets
-        all_preds = torch.cat([x["y_pred"] for x in self.validation_step_outputs])
-        all_targets = torch.cat([x["y_true"] for x in self.validation_step_outputs])
-        
-        # Print shape information for debugging
-        print(f"Validation predictions shape: {all_preds.shape}")
-        print(f"Validation targets shape: {all_targets.shape}")
-        
-        # Get coordinates
-        lat_coords, lon_coords = self.trainer.datamodule.get_coords()
-        time_coords = np.arange(all_preds.shape[0])
-        output_vars = ["tas", "pr"]  # Temperature and precipitation
-        
-        print(f"Coordinates - Time: {time_coords.shape}, Lat: {lat_coords.shape}, Lon: {lon_coords.shape}")
-        
-        # Convert predictions and targets to Kaggle format
-        predictions = all_preds.numpy()
-        targets = all_targets.numpy()
-        
-        print(f"Numpy predictions shape: {predictions.shape}")
-        
-        # Check for NaN or inf values
-        n_nan_pred = np.isnan(predictions).sum()
-        n_inf_pred = np.isinf(predictions).sum()
-        if n_nan_pred > 0 or n_inf_pred > 0:
-            print(f"Warning: Found {n_nan_pred} NaN and {n_inf_pred} inf values in predictions")
-        
-        # Use our fixed function instead of the original one
         try:
-            print("Converting predictions to Kaggle format...")
-            submission_df = convert_predictions_to_kaggle_format(
-                predictions, 
-                time_coords, 
-                lat_coords, 
-                lon_coords, 
-                output_vars
-            )
-            print(f"Successfully created submission DataFrame with shape: {submission_df.shape}")
+            # Stack all predictions and targets
+            all_preds = torch.cat([x["y_pred"] for x in self.validation_step_outputs])
+            all_targets = torch.cat([x["y_true"] for x in self.validation_step_outputs])
             
-            print("Converting targets to Kaggle format...")
+            # Print shape information for debugging
+            print(f"Validation batch shape: {all_preds.shape}")
+            
+            # Get coordinates
+            lat_coords, lon_coords = self.trainer.datamodule.get_coords()
+            time_coords = np.arange(all_preds.shape[0])
+            output_vars = ["tas", "pr"]  # Temperature and precipitation
+            
+            # Check for NaN or inf values
+            predictions = all_preds.numpy()
+            targets = all_targets.numpy()
+            n_nan_pred = np.isnan(predictions).sum()
+            n_inf_pred = np.isinf(predictions).sum()
+            if n_nan_pred > 0 or n_inf_pred > 0:
+                print(f"Warning: Found {n_nan_pred} NaN and {n_inf_pred} inf values in predictions")
+            
+            # Convert first and calculate score
+            submission_df = convert_predictions_to_kaggle_format(
+                predictions, time_coords, lat_coords, lon_coords, output_vars)
             solution_df = convert_predictions_to_kaggle_format(
-                targets,
-                time_coords, 
-                lat_coords, 
-                lon_coords, 
-                output_vars
-            )
-            print(f"Successfully created solution DataFrame with shape: {solution_df.shape}")
+                targets, time_coords, lat_coords, lon_coords, output_vars)
             
             # Calculate Kaggle score
             try:
-                print("Calculating Kaggle score...")
                 kaggle_val_score = kaggle_score(solution_df, submission_df, "ID")
-                print(f"Successfully calculated Kaggle score: {kaggle_val_score}")
                 self.log("val/kaggle_score", kaggle_val_score)
+                print(f"Validation Kaggle score: {kaggle_val_score}")
             except Exception as e:
                 print(f"Warning: Could not calculate Kaggle score: {e}")
-                print(f"Error type: {type(e).__name__}")
-                print(f"Traceback: {sys.exc_info()[2]}")
                 # Log a default value to avoid NaN errors
                 self.log("val/kaggle_score", 999.0)
                 
-            # Also calculate individual metrics for monitoring
-            area_weights = self.trainer.datamodule.get_lat_weights()
-            
-            # Calculate metrics for each variable
-            # This part is simplified for robustness
+            # Calculate simplified metrics for monitoring
             try:
-                for i, var_name in enumerate(output_vars):
-                    # Extract predictions and targets for this variable
-                    preds_var = all_preds[:, i].numpy()
-                    targets_var = all_targets[:, i].numpy()
-                    
-                    # Calculate simple MSE
-                    mse = ((preds_var - targets_var) ** 2).mean()
-                    self.log(f"val/{var_name}/mse", float(mse))
-                    print(f"MSE for {var_name}: {float(mse)}")
+                # Just MSE for simplicity
+                mse = ((predictions - targets) ** 2).mean()
+                self.log("val/mse", float(mse))
+                print(f"Validation MSE: {float(mse)}")
             except Exception as e:
-                print(f"Warning: Could not calculate individual metrics: {e}")
+                print(f"Warning: Could not calculate MSE: {e}")
         
         except Exception as e:
-            print(f"Error during Kaggle format conversion: {e}")
-            print(f"Error type: {type(e).__name__}")
-            import traceback
-            traceback.print_exc()
+            print(f"Error during validation: {e}")
             # Log a default value
             self.log("val/kaggle_score", 999.0)
-        
-        # Clear saved outputs
-        self.validation_step_outputs.clear()
+            
+        finally:
+            # Always clear saved outputs
+            self.validation_step_outputs.clear()
     
     # Apply the monkey patch
     import types
