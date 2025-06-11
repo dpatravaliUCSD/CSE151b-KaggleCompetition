@@ -1,8 +1,6 @@
 # CSE 151B Competition Spring 2025 - Climate Emulation
 
-This repository contains a starting point for the [CSE 151B](https://sites.google.com/view/cse151b-251b/151b-info) competition on climate emulation.
-It includes a basic PyTorch Lightning training script, a simple CNN model, a data loader for the provided Zarr dataset, a configuration system using Hydra, and a logging system using Weights & Biases.
-Its structure follows what we find to be useful in our own research projects, but you are free to modify it as needed.
+This repository is a continuation of the original [baseline repository](https://github.com/salvaRC/cse151b-spring2025-competition) provided for the CSE 151B Climate Emulation Competition. While the original repo offered a PyTorch Lightning training script and a basic CNN model, our team has extended it with multiple modeling strategies, temporal data augmentations, and experimental architectures. Each branch consists of self-contained experiments with different approaches, all working from the shared data processing pipeline and configuration structure. 
 
 ## | Kaggle Competition Website
     
@@ -71,77 +69,14 @@ This competition challenges participants to develop machine learning models that
     - Validation: Last 10 years of SSP370
     - Testing: SSP245 (intermediate emissions)
   
-  Note: By default, the provided code uses a single ensemble as target for training and validation. It is up to you to decide if and how to use the other ensemble members.
 
-  ### Data Preparation
+## Branch Overview
 
-  In the ``main.py`` script, the data is preprocessed with:
-  - Normalization of input and output variables (Z-score normalization)
-  - Handling of global input variables by broadcasting them to match spatial dimensions
-   
-  You can modify this preprocessing pipeline to suit your model architecture and requirements. 
-  For example, precipitation data follows a skewed distribution, which may benefit from alternative normalization methods.
- 
-### Data Visualization
+Each branch includes a notebook summarizing the experiment:
 
-See the [notebooks/data-exploration-basic.ipynb](notebooks/data-exploration-basic.ipynb) notebook for a basic data exploration and visualization of the dataset.
-
-
-## | Getting Started
-
-1. Create a fresh virtual environment (we recommend python >= 3.10) and install the required dependencies:
-   ```bash
-   pip install -r requirements.txt
-   ```
-
-2. Download the zarr data files from the competition page and place them in a directory of your choice (you'll later need to specify it with the ``data.path`` argument).
-
-### Configuration
-
-This project uses Hydra for configuration management. The main configuration files are in the `configs/` directory:
-
-- `configs/main_config.yaml`: Main configuration file that includes other configuration files
-- `configs/data/default.yaml`: Dataset and data-loading related settings (e.g. data path and batch size)
-- `configs/model/simple_cnn.yaml`: Model architecture settings (e.g. architecture type, number of layers)
-- `configs/training/default.yaml`: Training parameters (e.g. learning rate)
-- `configs/trainer/default.yaml`: PyTorch Lightning Trainer settings (e.g. number of GPUs, precision)
-
-### Running the Model
-
-This codebase uses PyTorch Lightning for training. It is meant to be a starting point for your own model development.
-You may use any (or none) of the code provided here and are free to modify it as needed.
-
-To train the model with default settings:
-
-```bash
-python main.py data.path=/path/to/your/data.zarr
-```
-
-#### Logging
-
-It is recommended to use Weights & Biases for logging.
-To enable logging, set `use_wandb=true` and specify your W&B (team) username with `wandb_entity=<your-wandb-username>`.
-You will need to create a project `cse-151b-competition` on Weights & Biases. 
-When logging is enabled, the training script will automatically log metrics, and hyperparameters to your W&B project.
-This will allow you to monitor your training runs and compare different experiments more conveniently from the W&B dashboard.
-
-#### Common Configuration Options
-
-Override configuration options from the command line:
-
-```bash
-# Use Weights & Biases for logging (recommended). Be sure to first create a project ``cse-151b-competition`` on wandb.
-python main.py data.path=/path/to/your/data.zarr use_wandb=true wandb_entity=<your-wandb-username>
-
-# Change batch size and learning rate and use different batch size for validation
-python main.py data.path=/path/to/your/data.zarr data.batch_size=64 data.eval_batch_size=32 training.lr=1e-3
-
-# Change the number of epochs
-python main.py data.path=/path/to/your/data.zarr trainer.max_epochs=200
-
-# Train on 4 GPUs with DistributedDataParallel (DDP) mode
-python main.py data.path=/path/to/your/data.zarr trainer.strategy="ddp_find_unused_parameters_false" trainer.devices=4 
-
-# Resume training from (or evaluate) a specific checkpoint
-python main.py data.path=/path/to/your/data.zarr ckpt_path=/path/to/your/checkpoint.ckpt
-```
+| Branch     | Model/Approach Description | Notebook |
+|------------|-----------------------------|----------|
+| `main`     | **3D U-Net** with time dimension augmentation. This was our best-performing model on both validation and public leaderboard. | `temporal_experiment.ipynb` |
+| `rnn`      | **ClimateRNNNet**, an underperforming RNN-based model from our project milestone experiments. | `rnn_experiment.ipynb` |
+| `timestep` | 3D U-Net with both **time dimension augmentation** and an **extra timestep channel**. Improved validation loss but worsened Kaggle score. | `timestep_experiment.ipynb` |
+| `separate` | **Separate 3D U-Net** models per output variable (`tas` and `pr`). Slightly worse leaderboard score, but informative for future extensions. | `separate_experiment.ipynb` |
