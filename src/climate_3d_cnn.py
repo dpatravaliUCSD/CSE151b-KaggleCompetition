@@ -82,7 +82,8 @@ class ClimateEmulator3D(pl.LightningModule):
         self.normalizer = None
         
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        return self.encoder(x)
+        x = x.permute(1, 0, 2, 3).unsqueeze(0)
+        return self.encoder(x).squeeze(0).permute(1, 0, 2, 3)
     
     def on_fit_start(self) -> None:
         # Get normalizer from datamodule
