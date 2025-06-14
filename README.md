@@ -79,4 +79,6 @@ Each branch includes a notebook summarizing the experiment:
 | `main`     | **3D U-Net** with time dimension augmentation. This was our best-performing model on both validation and public leaderboard. | `temporal_experiment.ipynb` |
 | `rnn`      | **ClimateRNNNet**, an underperforming RNN-based model from our project milestone experiments. | `rnn_experiment.ipynb` |
 | `timestep` | 3D U-Net with both **time dimension augmentation** and an **extra timestep channel**. Improved validation loss but worsened Kaggle score. | `timestep_experiment.ipynb` |
+| `circular` | 3D U-Net with **time dimension augmentation** and circular padding applied to width dimension. | `circular_experiment.ipynb` |
 | `separate` | **Separate 3D U-Net** models per output variable (`tas` and `pr`). Slightly worse leaderboard score, but informative for future extensions. | `separate_experiment.ipynb` |
+
